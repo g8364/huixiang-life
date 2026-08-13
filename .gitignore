@@ -39,8 +39,7 @@ build/
 backend*.log
 load-test/seckill-users-500.csv
 
-### Keep local-only database and load-test assets ###
-src/main/resources/db/
+### Keep local-only load-test assets ###
 load-test/
 
 ### GitHub-only local practice files ###
