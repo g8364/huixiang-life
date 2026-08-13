@@ -42,3 +42,6 @@ load-test/seckill-users-500.csv
 ### Keep local-only database and load-test assets ###
 src/main/resources/db/
 load-test/
+
+### GitHub-only local practice files ###
+src/main/java/com/hmdp/LeetCode/
