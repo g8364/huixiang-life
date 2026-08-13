@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3">
+  <hashTree>
+    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="秒杀用户限流测试" enabled="true">
+      <stringProp name="TestPlan.comments">同一用户、同一IP，20请求同步起跑；阈值5次/秒</stringProp>
+      <boolProp name="TestPlan.functional_mode">false</boolProp>
+      <boolProp name="TestPlan.tearDown_on_shutdown">true</boolProp>
+      <boolProp name="TestPlan.serialize_threadgroups">false</boolProp>
+      <elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments" testname="变量" enabled="true">
+        <collectionProp name="Arguments.arguments">
+          <elementProp name="token" elementType="Argument">
+            <stringProp name="Argument.name">token</stringProp>
+            <stringProp name="Argument.value">${__P(rateLimitToken,)}</stringProp>
+            <stringProp name="Argument.metadata">=</stringProp>
+          </elementProp>
+          <elementProp name="clientIp" elementType="Argument">
+            <stringProp name="Argument.name">clientIp</stringProp>
+            <stringProp name="Argument.value">192.168.30.1</stringProp>
+            <stringProp name="Argument.metadata">=</stringProp>
+          </elementProp>
+        </collectionProp>
+      </elementProp>
+    </TestPlan>
+    <hashTree>
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="20请求冲击5次每秒限流">
+        <intProp name="ThreadGroup.num_threads">20</intProp>
+        <intProp name="ThreadGroup.ramp_time">1</intProp>
+        <boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp>
+        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="循环一次">
+          <stringProp name="LoopController.loops">1</stringProp>
+          <boolProp name="LoopController.continue_forever">false</boolProp>
+        </elementProp>
+      </ThreadGroup>
+      <hashTree>
+        <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="同一用户与IP" enabled="true">
+          <collectionProp name="HeaderManager.headers">
+            <elementProp name="authorization" elementType="Header">
+              <stringProp name="Header.name">authorization</stringProp>
+              <stringProp name="Header.value">${token}</stringProp>
+            </elementProp>
+            <elementProp name="X-Forwarded-For" elementType="Header">
+              <stringProp name="Header.name">X-Forwarded-For</stringProp>
+              <stringProp name="Header.value">${clientIp}</stringProp>
+            </elementProp>
+          </collectionProp>
+        </HeaderManager>
+        <hashTree/>
+        <SyncTimer guiclass="TestBeanGUI" testclass="SyncTimer" testname="20请求同步起跑" enabled="true">
+          <intProp name="groupSize">20</intProp>
+          <longProp name="timeoutInMs">10000</longProp>
+        </SyncTimer>
+        <hashTree/>
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="POST 秒杀券10">
+          <intProp name="HTTPSampler.connect_timeout">3000</intProp>
+          <intProp name="HTTPSampler.response_timeout">10000</intProp>
+          <stringProp name="HTTPSampler.domain">127.0.0.1</stringProp>
+          <stringProp name="HTTPSampler.port">8081</stringProp>
+          <stringProp name="HTTPSampler.protocol">http</stringProp>
+          <stringProp name="HTTPSampler.path">/voucher-order/seckill/10</stringProp>
+          <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
+          <stringProp name="HTTPSampler.method">POST</stringProp>
+          <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+          <boolProp name="HTTPSampler.postBodyRaw">false</boolProp>
+          <elementProp name="HTTPsampler.Arguments" elementType="Arguments" guiclass="HTTPArgumentsPanel" testclass="Arguments" testname="User Defined Variables">
+            <collectionProp name="Arguments.arguments"/>
+          </elementProp>
+        </HTTPSamplerProxy>
+        <hashTree>
+          <JSR223PostProcessor guiclass="TestBeanGUI" testclass="JSR223PostProcessor" testname="按业务结果分类" enabled="true">
+            <stringProp name="scriptLanguage">groovy</stringProp>
+            <stringProp name="parameters"></stringProp>
+            <stringProp name="filename"></stringProp>
+            <stringProp name="cacheKey">true</stringProp>
+            <stringProp name="script">import groovy.json.JsonSlurper
+def body = prev.getResponseDataAsString()
+try {
+    def json = new JsonSlurper().parseText(body)
+    if (json.success == true) prev.setSampleLabel(&apos;01-下单成功&apos;)
+    else if ((json.errorMsg ?: &apos;&apos;).contains(&apos;频繁&apos;)) prev.setSampleLabel(&apos;03-命中限流&apos;)
+    else if ((json.errorMsg ?: &apos;&apos;).contains(&apos;重复&apos;) || (json.errorMsg ?: &apos;&apos;).contains(&apos;不能重复&apos;)) prev.setSampleLabel(&apos;02-重复下单&apos;)
+    else prev.setSampleLabel(&apos;04-其他业务结果&apos;)
+} catch (Exception ignored) { prev.setSampleLabel(&apos;05-非JSON或系统异常&apos;); prev.setSuccessful(false) }</stringProp>
+          </JSR223PostProcessor>
+          <hashTree/>
+        </hashTree>
+        <ResultCollector guiclass="SummaryReport" testclass="ResultCollector" testname="分类汇总报告">
+          <boolProp name="ResultCollector.error_logging">false</boolProp>
+          <objProp>
+            <name>saveConfig</name>
+            <value class="SampleSaveConfiguration">
+              <time>true</time>
+              <latency>true</latency>
+              <timestamp>true</timestamp>
+              <success>true</success>
+              <label>true</label>
+              <code>true</code>
+              <message>true</message>
+              <threadName>true</threadName>
+              <dataType>true</dataType>
+              <encoding>false</encoding>
+              <assertions>true</assertions>
+              <subresults>true</subresults>
+              <responseData>false</responseData>
+              <samplerData>false</samplerData>
+              <xml>false</xml>
+              <fieldNames>true</fieldNames>
+              <responseHeaders>false</responseHeaders>
+              <requestHeaders>false</requestHeaders>
+              <responseDataOnError>false</responseDataOnError>
+              <saveAssertionResultsFailureMessage>false</saveAssertionResultsFailureMessage>
+              <assertionsResultsToSave>0</assertionsResultsToSave>
+              <bytes>true</bytes>
+              <sentBytes>true</sentBytes>
+              <threadCounts>true</threadCounts>
+              <idleTime>true</idleTime>
+              <connectTime>true</connectTime>
+            </value>
+          </objProp>
+          <stringProp name="filename"></stringProp>
+        </ResultCollector>
+        <hashTree/>
+        <ResultCollector guiclass="ViewResultsFullVisualizer" testclass="ResultCollector" testname="察看结果树" enabled="true">
+          <boolProp name="ResultCollector.error_logging">false</boolProp>
+          <objProp>
+            <name>saveConfig</name>
+            <value class="SampleSaveConfiguration">
+              <time>false</time>
+              <latency>false</latency>
+              <timestamp>false</timestamp>
+              <success>false</success>
+              <label>false</label>
+              <code>false</code>
+              <message>false</message>
+              <threadName>false</threadName>
+              <dataType>false</dataType>
+              <encoding>false</encoding>
+              <assertions>false</assertions>
+              <subresults>false</subresults>
+              <responseData>false</responseData>
+              <samplerData>false</samplerData>
+              <xml>false</xml>
+              <fieldNames>false</fieldNames>
+              <responseHeaders>false</responseHeaders>
+              <requestHeaders>false</requestHeaders>
+              <responseDataOnError>false</responseDataOnError>
+              <saveAssertionResultsFailureMessage>false</saveAssertionResultsFailureMessage>
+              <assertionsResultsToSave>0</assertionsResultsToSave>
+            </value>
+          </objProp>
+          <stringProp name="filename"></stringProp>
+        </ResultCollector>
+        <hashTree/>
+      </hashTree>
+    </hashTree>
+  </hashTree>
+</jmeterTestPlan>

@@ -1,0 +1,85 @@
+services:
+  mysql:
+    image: mysql:5.7.44
+    container_name: hmdp-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: hmdp
+      TZ: Asia/Shanghai
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./src/main/resources/db/hmdp.sql:/docker-entrypoint-initdb.d/01-hmdp.sql:ro
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_general_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: hmdp-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: hmdp-kafka
+    restart: unless-stopped
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_LISTENERS: INTERNAL://kafka:29092,CONTROLLER://kafka:29093,EXTERNAL://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: hmdp-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command: >-
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists
+      --topic hmdp.voucher-order --partitions 3 --replication-factor 1 &&
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists
+      --topic hmdp.voucher-order.dlt --partitions 3 --replication-factor 1 &&
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists
+      --topic hmdp.cache-invalidation --partitions 3 --replication-factor 1
+
+volumes:
+  mysql-data:
+  redis-data:
+  kafka-data:
