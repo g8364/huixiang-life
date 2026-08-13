@@ -65,21 +65,19 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 
     @Override
     public Result queryById(Long id) {
-        //缓存穿透
-//        Shop shop = queryWithPassThrough(id);
-        //缓存穿透可以直接用以下这个工具类里面的方法
-        // Caffeine merges concurrent loads for the same key inside one JVM;
-        // Redis mutex coordinates cache rebuilds across application instances.
-        Shop shop = shopLocalCache.get(id, shopId -> cacheClient.queryWithMutex(
-                CACHE_SHOP_KEY, LOCK_SHOP_KEY, shopId, Shop.class, this::getById,
-                CACHE_SHOP_TTL, TimeUnit.MINUTES));
-//        cacheClient.queryWithPassThrough(CACHE_SHOP_KEY,id,Shop.class,this::getById,CACHE_SHOP_TTL,TimeUnit.MINUTES);
-        //利用互斥锁解决缓存击穿
-//        Shop shop = queryWithLogicalExpire(id);
-        //利用逻辑过期解决缓存击穿，调用工具类中的方法--接下来的方法中不能使用缓存击穿来查询店铺信息，因为一旦传入的店铺ID不是1，那么就会显示店铺信息不存在，所以应该使用缓存穿透
-//        //    缓存击穿的需要手动将店铺信息加入到redis中，缓存击穿代码中当查不到时只会返回null，不会去查数据库
-//        Shop shop = cacheClient.queryWithLogicalExpire(
-//                CACHE_SHOP_KEY, id, Shop.class, LOCK_SHOP_KEY,10L, TimeUnit.SECONDS,id2 -> getById(id));
+        Shop shop = shopLocalCache.getIfPresent(id);
+        if (shop == null) {
+            CacheClient.LogicalCacheResult<Shop> result = cacheClient.queryWithLogicalExpireResult(
+                    CACHE_SHOP_KEY, LOCK_SHOP_KEY, id, Shop.class, this::getById,
+                    CACHE_SHOP_TTL, TimeUnit.MINUTES, () -> shopLocalCache.invalidate(id));
+            shop = result.getValue();
+            // Do not put a logically expired value into Caffeine. Requests may use
+            // the stale Redis value temporarily, but the next request will observe
+            // the asynchronously rebuilt value instead of caching stale data locally.
+            if (shop != null && !result.isStale()) {
+                shopLocalCache.put(id, shop);
+            }
+        }
         if (shop == null) {
             return Result.fail("店铺不存在");
         }

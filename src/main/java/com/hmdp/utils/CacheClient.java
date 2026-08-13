@@ -10,10 +10,10 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
-import java.time.temporal.TemporalUnit;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import com.hmdp.utils.RedisData;
 import static com.hmdp.utils.RedisConstants.*;
@@ -146,7 +146,125 @@ public class CacheClient {
      * @return
      */
     //线程池
-    private static final ExecutorService CACHE_REBUILD_EXECUTOR= Executors.newFixedThreadPool(10);
+    private static final AtomicInteger REBUILD_THREAD_NUMBER = new AtomicInteger();
+    private static final ExecutorService CACHE_REBUILD_EXECUTOR = Executors.newFixedThreadPool(10, runnable -> {
+        Thread thread = new Thread(runnable, "cache-rebuild-" + REBUILD_THREAD_NUMBER.incrementAndGet());
+        thread.setDaemon(true);
+        return thread;
+    });
+
+    /**
+     * Query a hot key with logical expiration.
+     *
+     * <p>A physically present but logically expired value is returned immediately.
+     * Only the request that acquires the Redis rebuild lock refreshes the value in
+     * a background thread. Other requests keep using the stale value, so they never
+     * block on database reconstruction.</p>
+     *
+     * <p>Cold misses are loaded synchronously because logical expiration requires
+     * the hot key to exist. Existing plain-JSON cache entries are also migrated to
+     * the logical-expiration envelope on first access.</p>
+     */
+    public <R, ID> LogicalCacheResult<R> queryWithLogicalExpireResult(
+            String keyPrefix, String lockPrefix, ID id, Class<R> type,
+            Function<ID, R> dbFallback, long ttl, TimeUnit unit,
+            Runnable afterRebuild) {
+        String key = keyPrefix + id;
+        String json = stringRedisTemplate.opsForValue().get(key);
+        if ("".equals(json)) {
+            return LogicalCacheResult.fresh(null);
+        }
+        if (StrUtil.isBlank(json)) {
+            return LogicalCacheResult.fresh(loadColdValue(key, id, dbFallback, ttl, unit));
+        }
+
+        RedisData redisData;
+        try {
+            redisData = JSONUtil.toBean(json, RedisData.class);
+        } catch (RuntimeException malformedEnvelope) {
+            return LogicalCacheResult.fresh(migratePlainValue(key, id, type, dbFallback, ttl, unit, json));
+        }
+        if (redisData.getExpireTime() == null || redisData.getData() == null) {
+            return LogicalCacheResult.fresh(migratePlainValue(key, id, type, dbFallback, ttl, unit, json));
+        }
+
+        R value = JSONUtil.toBean((JSONObject) redisData.getData(), type);
+        if (redisData.getExpireTime().isAfter(LocalDateTime.now())) {
+            return LogicalCacheResult.fresh(value);
+        }
+
+        String lockKey = lockPrefix + id;
+        if (tryLock(lockKey)) {
+            CACHE_REBUILD_EXECUTOR.submit(() -> {
+                try {
+                    R latest = dbFallback.apply(id);
+                    if (latest == null) {
+                        stringRedisTemplate.opsForValue().set(key, "", CACHE_NULL_TTL, TimeUnit.MINUTES);
+                    } else {
+                        setWithLogicalExpire(key, latest, ttl, unit);
+                    }
+                    if (afterRebuild != null) {
+                        afterRebuild.run();
+                    }
+                } catch (Exception e) {
+                    log.error("逻辑过期缓存异步重建失败，key={}", key, e);
+                } finally {
+                    unlock(lockKey);
+                }
+            });
+        }
+        return LogicalCacheResult.stale(value);
+    }
+
+    private <R, ID> R loadColdValue(String key, ID id, Function<ID, R> dbFallback,
+                                    long ttl, TimeUnit unit) {
+        R value = dbFallback.apply(id);
+        if (value == null) {
+            stringRedisTemplate.opsForValue().set(key, "", CACHE_NULL_TTL, TimeUnit.MINUTES);
+        } else {
+            setWithLogicalExpire(key, value, ttl, unit);
+        }
+        return value;
+    }
+
+    private <R, ID> R migratePlainValue(String key, ID id, Class<R> type,
+                                        Function<ID, R> dbFallback, long ttl,
+                                        TimeUnit unit, String json) {
+        try {
+            R value = JSONUtil.toBean(json, type);
+            setWithLogicalExpire(key, value, ttl, unit);
+            return value;
+        } catch (RuntimeException ignored) {
+            return loadColdValue(key, id, dbFallback, ttl, unit);
+        }
+    }
+
+    public static final class LogicalCacheResult<R> {
+        private final R value;
+        private final boolean stale;
+
+        private LogicalCacheResult(R value, boolean stale) {
+            this.value = value;
+            this.stale = stale;
+        }
+
+        public static <R> LogicalCacheResult<R> fresh(R value) {
+            return new LogicalCacheResult<>(value, false);
+        }
+
+        public static <R> LogicalCacheResult<R> stale(R value) {
+            return new LogicalCacheResult<>(value, true);
+        }
+
+        public R getValue() {
+            return value;
+        }
+
+        public boolean isStale() {
+            return stale;
+        }
+    }
+
     public <R,ID> R queryWithLogicalExpire(
             String keyPrefix,ID id,Class<R> type,String LocKeyPrefix,Long time,TimeUnit unit,Function<ID,R> selectData){
 
